@@ -1,0 +1,35 @@
+---
+- name: "Create New user on Windows Machine"
+  hosts: all
+  tasks:
+    - name: "Check Windows machines access using win_ping"
+      win_ping:
+      when: ansible_os_family == 'Windows'
+
+    - name: Create tmp folder
+      win_dsc:
+        resource_name: File
+        DestinationPath: C:\tmp
+        Ensure: Present
+        Type: Directory
+
+    - name: Find location of docker
+      ansible.windows.win_powershell:
+        script: "(Get-Command docker2s).Path"
+      register: docker_path
+
+    - debug:
+        msg: "{{ docker_path }}"
+
+    - debug:
+        msg: "{{ docker_path }}"
+
+    - debug:
+        msg: "{{ docker_path.error }}"
+
+    - debug:
+        msg: "error is empty {{ docker_path.error | default('', true) | trim == '' }}"
+
+    - debug:
+        msg: "error is not empty {{ docker_path.error | default('', true) | trim != '' }}"
+

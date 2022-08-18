@@ -1,0 +1,163 @@
+---
+- name: "Create New user on Windows Machine"
+  hosts: all
+  tasks:
+    - name: "Check Windows machines access using win_ping"
+      win_ping:
+      when: ansible_os_family == 'Windows'
+
+#    - name: Install Docker
+#      chocolatey.chocolatey.win_chocolatey:
+#        name: "docker-desktop"
+#        state: absent
+
+#    - name: Install make
+#      chocolatey.chocolatey.win_chocolatey:
+#        name: "make"
+#        state: present
+
+#    - name: Install golang
+#      chocolatey.chocolatey.win_chocolatey:
+#        name: "golang"
+#        state: present
+
+    - name: Create tmp folder
+      win_dsc:
+        resource_name: File
+        DestinationPath: C:\tmp
+        Ensure: Present
+        Type: Directory
+
+    - name: Find location of docker
+      ansible.windows.win_powershell:
+        script: "(Get-Command docker).Path"
+      register: docker_found
+
+    - name: Install DockerCE
+      ansible.windows.win_powershell: 
+        script: |
+          Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/microsoft/Windows-Containers/Main/helpful_tools/Install-DockerCE/install-docker-ce.ps1" -o install-docker-ce.ps1
+          .\install-docker-ce.ps1
+        parameters:
+          Path: C:\tmp
+      when: docker_found.error | default('', true) | trim == ''
+
+    - name: Check for csi-proxy.exe
+      win_stat:
+        path: "C:\\etc\\kubernetes\\node\\bin\\csi-proxy.exe"
+      register: csiproxy_stat
+    
+    # derived from https://github.com/kubernetes-csi/csi-proxy#build
+    - name: Install csi-proxy
+      block:
+        - name: Display
+          debug:
+            msg: "derived pulled from https://github.com/kubernetes-csi/csi-proxy#build"
+
+        - name: Create kubernetes logs folder
+          win_dsc:
+            resource_name: File
+            DestinationPath: C:\etc\kubernetes\logs
+            Ensure: Present
+            Type: Directory
+
+        - name: Create kubernetes bin folder
+          win_dsc:
+            resource_name: File
+            DestinationPath: C:\etc\kubernetes\node\bin
+            Ensure: Present
+            Type: Directory
+
+#      - name: Download csi-proxy
+#        win_get_url:
+#          url: https://github.com/kubernetes-csi/csi-proxy/archive/refs/heads/master.zip
+#          dest: C:\tmp\csi-proxy.zip
+
+#      - name: extract a zip file
+#        win_dsc:
+#          resource_name: Archive
+#          Destination: c:\tmp\csi-proxy
+#          Path: C:\tmp\csi-proxy.zip
+#          Ensure: Present
+
+        - name: Creates directory
+          file:
+            path: /tmp/csi-proxy
+            state: directory
+          delegate_to: localhost
+
+        - name: Download csi-proxy
+          get_url:
+            url: https://github.com/kubernetes-csi/csi-proxy/archive/refs/heads/master.zip
+            dest: /tmp/csi-proxy.zip
+          delegate_to: localhost
+
+        - name: extract csi-proxy zip file
+          unarchive:
+            src: /tmp/csi-proxy.zip
+            dest: /tmp/csi-proxy
+          delegate_to: localhost
+
+        - name: make csi-proxy.exe
+          make:
+            chdir: /tmp/csi-proxy/csi-proxy-master
+            target: build
+          delegate_to: localhost
+
+        - name: Copy csi-proxy.exe to bin folder
+          win_copy:
+            src: /tmp/csi-proxy/csi-proxy-master/bin/csi-proxy.exe
+            dest: C:\etc\kubernetes\node\bin\
+
+        - name: Create service
+          ansible.windows.win_powershell:
+            script: |
+                  $flags = "-windows-service -log_file=C:\etc\kubernetes\logs\csi-proxy.log -logtostderr=false"
+                  sc.exe create csiproxy start= "auto" binPath= "C:\etc\kubernetes\node\bin\csi-proxy.exe $flags"
+                  sc.exe failure csiproxy reset= 0 actions= restart/10000
+                  sc.exe start csiproxy
+          register: csiproxy_service
+
+      when: not csiproxy_stat.stat.exists
+
+
+    # derived from https://github.com/kubernetes-csi/csi-proxy#installation
+    - name: Check if csiproxy service is installed
+      win_service:
+        name: csiproxy2
+      register: csiproxy_service_info
+
+    - name: msg
+      debug:
+        msg: "{{ csiproxy_service_info }}"
+
+    - name: Install csi-proxy service
+      block:
+        - name: Create csiproxy service
+          win_service:
+            name: csiproxy
+            description: "csi-proxy service for enabling kubernetes storage drivers"
+            path: "C:\\etc\\kubernetes\\node\\bin\\csi-proxy.exe -windows-service -log_file=C:\\etc\\kubernetes\\logs\\csi-proxy.log -logtostderr=false"
+            start_mode: "auto"
+            state: stopped
+
+        - name: Modify csiproxy service recovery settings
+          ansible.windows.win_powershell:
+            script: |
+              sc.exe failure csiproxy reset= 0 actions= restart/10000
+#              $flags = "-windows-service -log_file=C:\etc\kubernetes\logs\csi-proxy.log -logtostderr=false"
+#              sc.exe create csiproxy start= "auto" binPath= "C:\etc\kubernetes\node\bin\csi-proxy.exe $flags"
+#              sc.exe start csiproxy
+
+        - name: Restart csiproxy service
+          win_service:
+            name: csiproxy
+            state: restarted
+
+      when: not csiproxy_service_info.exists
+
+
+    - name: Open port 10250
+      ansible.windows.win_powershell: 
+        script: New-NetFirewallRule -DisplayName "ContainerLogsPort" -LocalPort 10250 -Enabled True -Direction Inbound -Protocol TCP -Action Allow -EdgeTraversalPolicy Allow
+
