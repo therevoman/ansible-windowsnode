@@ -124,7 +124,7 @@
     # derived from https://github.com/kubernetes-csi/csi-proxy#installation
     - name: Check if csiproxy service is installed
       win_service:
-        name: csiproxy2
+        name: csiproxy
       register: csiproxy_service_info
 
     - name: msg
